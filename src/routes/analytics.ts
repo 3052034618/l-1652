@@ -8,6 +8,7 @@ import {
   getDishCategoryDistribution,
   getTimeSlotDistribution,
   getPeriodComparison,
+  getExceptionDashboard,
 } from '../services/analytics';
 import { UserRole } from '../types';
 
@@ -104,6 +105,22 @@ router.get('/comparison', authenticate, requireRoles(UserRole.ADMIN), async (req
         current: { start: currentStart, end: currentEnd },
         previous: { start: previousStart, end: previousEnd },
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/exceptions', authenticate, requireRoles(UserRole.ADMIN), async (req: Request, res: Response, next) => {
+  try {
+    const { start_date, end_date } = req.query;
+    const startDate = start_date as string || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const endDate = end_date as string || new Date().toISOString().split('T')[0];
+
+    const data = await getExceptionDashboard(startDate, endDate);
+    return success(res, {
+      ...data,
+      query_params: { start_date: startDate, end_date: endDate },
     });
   } catch (error) {
     next(error);

@@ -1,6 +1,7 @@
 import { query, getClient } from '../database/pool';
 import { AppError } from '../utils/response';
 import { MealType } from '../types';
+import { createOrder } from './order';
 
 export interface CartUpdateInput {
   dish_id: string;
@@ -240,9 +241,18 @@ export async function batchUpdateCart(studentId: string, updates: CartUpdateInpu
 
 export async function checkoutFromCart(studentId: string, pickupScheduledTime?: string) {
   const cart = await getCart(studentId);
-  
+
+  if (cart.items.length === 0) {
+    throw new AppError('购物车为空，请先添加餐品', 400);
+  }
+
   if (cart.validItems.length === 0) {
-    throw new AppError('购物车中没有有效的餐品', 400);
+    const reasons = cart.invalidItems.map((item: any) => {
+      if (!item.dish.is_available) return `${item.dish.name}：已下架`;
+      if (item.dish.stock < item.quantity) return `${item.dish.name}：库存仅剩 ${item.dish.stock} 份`;
+      return `${item.dish.name}：不可用`;
+    });
+    throw new AppError('购物车中没有可结算餐品，原因：' + reasons.join('；'), 400);
   }
 
   const items = cart.validItems.map((item: any) => ({
@@ -251,9 +261,39 @@ export async function checkoutFromCart(studentId: string, pickupScheduledTime?: 
   }));
 
   return {
-    items,
-    totalAmount: cart.totalAmount,
+    preview: {
+      items,
+      totalAmount: cart.totalAmount,
+      itemCount: cart.validItems.length,
+      totalQuantity: cart.validItems.reduce((sum: number, it: any) => sum + it.quantity, 0),
+    },
     pickupScheduledTime,
-    cartSummary: cart,
+    invalidItems: cart.invalidItems.map((it: any) => ({
+      dish_id: it.dish_id,
+      dish_name: it.dish?.name || '未知餐品',
+      reason: !it.dish.is_available ? '已下架' : `库存不足（剩余 ${it.dish?.stock || 0} 份）`,
+    })),
+  };
+}
+
+export async function submitOrderFromCart(
+  studentId: string,
+  pickupScheduledTime?: string
+) {
+  const previewResult = await checkoutFromCart(studentId, pickupScheduledTime);
+
+  const orderResult = await createOrder(
+    studentId,
+    previewResult.preview.items,
+    {
+      pickup_scheduled_time: pickupScheduledTime,
+      clear_cart: true,
+    }
+  );
+
+  return {
+    order: orderResult.order,
+    mealTasks: orderResult.mealTasks,
+    skippedItems: previewResult.invalidItems,
   };
 }

@@ -9,6 +9,7 @@ import {
   clearCart,
   batchUpdateCart,
   checkoutFromCart,
+  submitOrderFromCart,
 } from '../services/cart';
 import { UserRole } from '../types';
 
@@ -76,6 +77,16 @@ router.get('/checkout', authenticate, requireRoles(UserRole.STUDENT), async (req
     const pickupScheduledTime = req.query.pickup_scheduled_time as string | undefined;
     const result = await checkoutFromCart(req.user!.userId, pickupScheduledTime);
     return success(res, result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/checkout', authenticate, requireRoles(UserRole.STUDENT), async (req: Request, res: Response, next) => {
+  try {
+    const { pickup_scheduled_time } = req.body;
+    const result = await submitOrderFromCart(req.user!.userId, pickup_scheduled_time);
+    return success(res, result, '下单成功，购物车已清空', 201);
   } catch (error) {
     next(error);
   }

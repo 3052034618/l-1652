@@ -282,33 +282,102 @@ export async function initDatabase() {
       );
     `);
 
+    await client.query('CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);');
+
+    console.log('执行数据库升级迁移，兼容老数据...');
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_orders_student_id ON orders(student_id);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'orders' AND column_name = 'pickup_scheduled_time') THEN
+          ALTER TABLE orders ADD COLUMN pickup_scheduled_time TIMESTAMP;
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'orders' AND column_name = 'remark') THEN
+          ALTER TABLE orders ADD COLUMN remark TEXT;
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.constraint_column_usage WHERE table_name = 'purchase_requests' AND constraint_name LIKE '%purchase_requests_status_check%') THEN
+          ALTER TABLE purchase_requests DROP CONSTRAINT IF EXISTS purchase_requests_status_check;
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_meal_tasks_chef_id ON meal_tasks(chef_id);
+      ALTER TABLE purchase_requests 
+      ALTER COLUMN status TYPE VARCHAR(25);
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_meal_tasks_status ON meal_tasks(status);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'purchase_requests' AND column_name = 'supplier_accepted_at') THEN
+          ALTER TABLE purchase_requests ADD COLUMN supplier_accepted_at TIMESTAMP;
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_ingredients_status ON ingredients(status);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'purchase_requests' AND column_name = 'expected_delivery_time') THEN
+          ALTER TABLE purchase_requests ADD COLUMN expected_delivery_time TIMESTAMP;
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_ingredients_expiry ON ingredients(expiry_date);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'purchase_requests' AND column_name = 'actual_delivery_time') THEN
+          ALTER TABLE purchase_requests ADD COLUMN actual_delivery_time TIMESTAMP;
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'purchase_requests' AND column_name = 'tracking_no') THEN
+          ALTER TABLE purchase_requests ADD COLUMN tracking_no VARCHAR(100);
+        END IF;
+      END $$;
     `);
+
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
+      ALTER TABLE purchase_requests
+      DROP CONSTRAINT IF EXISTS purchase_requests_status_check2;
     `);
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint 
+          WHERE conname = 'purchase_requests_status_check' 
+          AND conrelid = 'purchase_requests'::regclass
+        ) THEN
+          ALTER TABLE purchase_requests ADD CONSTRAINT purchase_requests_status_check
+          CHECK (status IN (
+            'pending', 'approved', 'rejected', 'ordered', 
+            'supplier_accepted', 'supplier_rejected', 'shipping', 'delivered'
+          ));
+        END IF;
+      END $$;
+    `);
+
+    console.log('数据库升级迁移完成，所有新字段已就绪。');
 
     await client.query('COMMIT');
     console.log('数据库初始化完成！');

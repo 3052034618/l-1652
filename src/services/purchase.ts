@@ -81,50 +81,6 @@ async function getSystemUserId(): Promise<string> {
   return '00000000-0000-0000-0000-000000000000';
 }
 
-export async function getAllPurchaseRequests(status?: PurchaseStatus) {
-  let sql =
-    'SELECT pr.*, i.name as ingredient_name, i.unit as ingredient_unit, ' +
-    '       u1.name as requester_name, u2.name as approver_name, u3.name as supplier_name ' +
-    'FROM purchase_requests pr ' +
-    'JOIN ingredients i ON pr.ingredient_id = i.id ' +
-    'JOIN users u1 ON pr.requested_by = u1.id ' +
-    'LEFT JOIN users u2 ON pr.approved_by = u2.id ' +
-    'LEFT JOIN users u3 ON pr.supplier_id = u3.id ' +
-    'WHERE 1=1';
-  const params: any[] = [];
-  let idx = 1;
-
-  if (status) {
-    sql += ' AND pr.status = $' + idx;
-    params.push(status);
-    idx++;
-  }
-
-  sql += ' ORDER BY pr.created_at DESC';
-
-  const result = await query(sql, params);
-  return result.rows;
-}
-
-export async function getPurchaseById(id: string) {
-  const result = await query(
-    'SELECT pr.*, i.name as ingredient_name, i.unit as ingredient_unit, ' +
-    '       u1.name as requester_name, u2.name as approver_name, u3.name as supplier_name ' +
-    'FROM purchase_requests pr ' +
-    'JOIN ingredients i ON pr.ingredient_id = i.id ' +
-    'JOIN users u1 ON pr.requested_by = u1.id ' +
-    'LEFT JOIN users u2 ON pr.approved_by = u2.id ' +
-    'LEFT JOIN users u3 ON pr.supplier_id = u3.id ' +
-    'WHERE pr.id = $1',
-    [id]
-  );
-
-  if (result.rows.length === 0) {
-    throw new AppError('采购申请不存在', 404);
-  }
-  return result.rows[0];
-}
-
 export async function approvePurchaseRequest(
   purchaseId: string,
   approvedBy: string,
@@ -192,30 +148,6 @@ export async function approvePurchaseRequest(
   } finally {
     client.release();
   }
-}
-
-export async function getSupplierPurchases(supplierId: string, status?: PurchaseStatus) {
-  let sql =
-    'SELECT pr.*, i.name as ingredient_name, i.unit as ingredient_unit, ' +
-    '       u1.name as requester_name, u2.name as approver_name ' +
-    'FROM purchase_requests pr ' +
-    'JOIN ingredients i ON pr.ingredient_id = i.id ' +
-    'JOIN users u1 ON pr.requested_by = u1.id ' +
-    'LEFT JOIN users u2 ON pr.approved_by = u2.id ' +
-    'WHERE pr.supplier_id = $1';
-  const params: any[] = [supplierId];
-  let idx = 2;
-
-  if (status) {
-    sql += ' AND pr.status = $' + idx;
-    params.push(status);
-    idx++;
-  }
-
-  sql += ' ORDER BY pr.created_at DESC';
-
-  const result = await query(sql, params);
-  return result.rows;
 }
 
 export async function supplierAcceptOrder(
@@ -533,4 +465,189 @@ export function getPurchaseStatusFlow(status: string): {
     totalSteps: steps.length,
     steps: stepList,
   };
+}
+
+const HOURS_UNTIL_OVERDUE = {
+  ordered: 4,
+  supplier_accepted: 24,
+  shipping: 48,
+  pending: 2,
+};
+
+export function enrichPurchase<T extends { status: string; created_at: Date; expected_delivery_time?: Date; remark?: string; supplier_accepted_at?: Date }>(pr: T): T & {
+  is_overdue: boolean;
+  overdue_hours: number;
+  exception_reason: string | null;
+  exception_type: 'rejected' | 'overdue' | 'delayed' | null;
+  next_actions: string[];
+  status_label: string;
+} {
+  const status = pr.status;
+  const now = new Date();
+  let isOverdue = false;
+  let overdueHours = 0;
+  let exceptionReason: string | null = null;
+  let exceptionType: 'rejected' | 'overdue' | 'delayed' | null = null;
+  const nextActions: string[] = [];
+
+  const createdAt = new Date(pr.created_at);
+
+  if (status === PurchaseStatus.REJECTED || status === PurchaseStatus.SUPPLIER_REJECTED) {
+    exceptionType = 'rejected';
+    exceptionReason = status === PurchaseStatus.SUPPLIER_REJECTED
+      ? '供应商拒绝：' + (pr.remark || '未提供原因')
+      : '管理员拒绝：' + (pr.remark || '未提供原因');
+  }
+
+  if (status === PurchaseStatus.PENDING) {
+    const diff = (now.getTime() - createdAt.getTime()) / 3600000;
+    if (diff > HOURS_UNTIL_OVERDUE.pending) {
+      isOverdue = true;
+      overdueHours = Math.round(diff - HOURS_UNTIL_OVERDUE.pending);
+      exceptionType = 'overdue';
+      exceptionReason = '采购单审批超时（已超过 ' + HOURS_UNTIL_OVERDUE.pending + ' 小时未审批）';
+    }
+    nextActions.push('请管理员尽快审批该采购申请');
+  }
+
+  if (status === PurchaseStatus.ORDERED) {
+    const diff = (now.getTime() - createdAt.getTime()) / 3600000;
+    if (diff > HOURS_UNTIL_OVERDUE.ordered) {
+      isOverdue = true;
+      overdueHours = Math.round(diff - HOURS_UNTIL_OVERDUE.ordered);
+      exceptionType = 'overdue';
+      exceptionReason = '供应商未及时响应（超过 ' + HOURS_UNTIL_OVERDUE.ordered + ' 小时未接单）';
+    }
+    nextActions.push('请供应商尽快确认接单或拒绝');
+    nextActions.push('管理员可主动联系供应商确认进度');
+  }
+
+  if (status === PurchaseStatus.SUPPLIER_ACCEPTED) {
+    if (pr.expected_delivery_time && new Date(pr.expected_delivery_time) < now) {
+      isOverdue = true;
+      const diff = (now.getTime() - new Date(pr.expected_delivery_time).getTime()) / 3600000;
+      overdueHours = Math.round(diff);
+      exceptionType = 'delayed';
+      exceptionReason = '供应商预计送达时间已过，尚未发货';
+    }
+    nextActions.push('请供应商尽快发货');
+    if (pr.expected_delivery_time) {
+      nextActions.push('预计送达：' + new Date(pr.expected_delivery_time).toLocaleString('zh-CN'));
+    }
+  }
+
+  if (status === PurchaseStatus.SHIPPING) {
+    if (pr.expected_delivery_time && new Date(pr.expected_delivery_time) < now) {
+      isOverdue = true;
+      const diff = (now.getTime() - new Date(pr.expected_delivery_time).getTime()) / 3600000;
+      overdueHours = Math.round(diff);
+      exceptionType = 'delayed';
+      exceptionReason = '配送已超时，预计送达时间已过';
+    }
+    nextActions.push('管理员可联系供应商确认配送进度');
+    nextActions.push('收货后请点击确认入库');
+  }
+
+  if (status === PurchaseStatus.APPROVED) {
+    nextActions.push('请管理员尽快下单给供应商');
+  }
+
+  if (status === PurchaseStatus.DELIVERED) {
+    nextActions.push('采购已完成，可查看库存更新记录');
+  }
+
+  const statusLabelMap: Record<string, string> = {
+    [PurchaseStatus.PENDING]: '待审批',
+    [PurchaseStatus.APPROVED]: '已批准待下单',
+    [PurchaseStatus.ORDERED]: '已下单待供应商响应',
+    [PurchaseStatus.SUPPLIER_ACCEPTED]: '供应商已接单备货中',
+    [PurchaseStatus.SUPPLIER_REJECTED]: '供应商已拒单',
+    [PurchaseStatus.SHIPPING]: '配送中',
+    [PurchaseStatus.DELIVERED]: '已送达入库',
+    [PurchaseStatus.REJECTED]: '已拒绝',
+  };
+
+  return {
+    ...pr,
+    is_overdue: isOverdue,
+    overdue_hours: overdueHours,
+    exception_reason: exceptionReason,
+    exception_type: exceptionType,
+    next_actions: nextActions,
+    status_label: statusLabelMap[status] || status,
+  };
+}
+
+export async function getAllPurchaseRequests(status?: PurchaseStatus) {
+  let sql =
+    'SELECT pr.*, i.name as ingredient_name, i.unit as ingredient_unit, ' +
+    '       i.current_stock as current_stock, i.safety_stock as safety_stock, ' +
+    '       u1.name as requester_name, u2.name as approver_name, u3.name as supplier_name ' +
+    'FROM purchase_requests pr ' +
+    'JOIN ingredients i ON pr.ingredient_id = i.id ' +
+    'JOIN users u1 ON pr.requested_by = u1.id ' +
+    'LEFT JOIN users u2 ON pr.approved_by = u2.id ' +
+    'LEFT JOIN users u3 ON pr.supplier_id = u3.id ' +
+    'WHERE 1=1';
+  const params: any[] = [];
+  let idx = 1;
+
+  if (status) {
+    sql += ' AND pr.status = $' + idx;
+    params.push(status);
+    idx++;
+  }
+
+  sql += ' ORDER BY pr.created_at DESC';
+
+  const result = await query(sql, params);
+  return result.rows.map((r: any) => enrichPurchase(r));
+}
+
+export async function getPurchaseById(id: string) {
+  const result = await query(
+    'SELECT pr.*, i.name as ingredient_name, i.unit as ingredient_unit, ' +
+    '       i.current_stock as current_stock, i.safety_stock as safety_stock, ' +
+    '       u1.name as requester_name, u2.name as approver_name, u3.name as supplier_name ' +
+    'FROM purchase_requests pr ' +
+    'JOIN ingredients i ON pr.ingredient_id = i.id ' +
+    'JOIN users u1 ON pr.requested_by = u1.id ' +
+    'LEFT JOIN users u2 ON pr.approved_by = u2.id ' +
+    'LEFT JOIN users u3 ON pr.supplier_id = u3.id ' +
+    'WHERE pr.id = $1',
+    [id]
+  );
+
+  if (result.rows.length === 0) {
+    throw new AppError('采购申请不存在', 404);
+  }
+  return enrichPurchase({
+    ...result.rows[0],
+    status_flow: getPurchaseStatusFlow(result.rows[0].status),
+  });
+}
+
+export async function getSupplierPurchases(supplierId: string, status?: PurchaseStatus) {
+  let sql =
+    'SELECT pr.*, i.name as ingredient_name, i.unit as ingredient_unit, ' +
+    '       i.current_stock as current_stock, i.safety_stock as safety_stock, ' +
+    '       u1.name as requester_name, u2.name as approver_name ' +
+    'FROM purchase_requests pr ' +
+    'JOIN ingredients i ON pr.ingredient_id = i.id ' +
+    'JOIN users u1 ON pr.requested_by = u1.id ' +
+    'LEFT JOIN users u2 ON pr.approved_by = u2.id ' +
+    'WHERE pr.supplier_id = $1';
+  const params: any[] = [supplierId];
+  let idx = 2;
+
+  if (status) {
+    sql += ' AND pr.status = $' + idx;
+    params.push(status);
+    idx++;
+  }
+
+  sql += ' ORDER BY pr.created_at DESC';
+
+  const result = await query(sql, params);
+  return result.rows.map((r: any) => enrichPurchase(r));
 }
