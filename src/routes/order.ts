@@ -17,7 +17,11 @@ const router = Router();
 router.post('/', authenticate, requireRoles(UserRole.STUDENT), async (req: Request, res: Response, next) => {
   try {
     const data = validate(createOrderSchema, req.body);
-    const result = await createOrder(req.user!.userId, data.items);
+    const { pickup_scheduled_time, clear_cart } = req.body;
+    const result = await createOrder(req.user!.userId, data.items, {
+      pickup_scheduled_time,
+      clear_cart: clear_cart === true || clear_cart === 'true',
+    });
     return success(res, result, '下单成功', 201);
   } catch (error) {
     next(error);

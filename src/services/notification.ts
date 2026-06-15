@@ -12,6 +12,7 @@ export type NotificationType =
   | 'ingredient_low_stock'
   | 'purchase_request'
   | 'purchase_approved'
+  | 'purchase_updated'
   | 'nutrition_report'
   | 'operations_report'
   | 'system';
@@ -37,15 +38,84 @@ export async function createNotification(
   return notification;
 }
 
-export async function getUserNotifications(userId: string, limit: number = 50) {
-  const result = await query(
-    `SELECT * FROM notifications 
-     WHERE user_id = $1 
-     ORDER BY created_at DESC 
-     LIMIT $2`,
-    [userId, limit]
+export interface NotificationQueryParams {
+  read?: boolean;
+  type?: string | string[];
+  fromDate?: string;
+  toDate?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getUserNotifications(
+  userId: string,
+  params: NotificationQueryParams = {}
+): Promise<{ list: any[]; total: number; unreadCount: number }> {
+  const { read, type, fromDate, toDate, limit = 50, offset = 0 } = params;
+
+  let whereConditions = ['user_id = $1'];
+  const values: any[] = [userId];
+  let idx = 2;
+
+  if (read !== undefined) {
+    whereConditions.push(`read = $${idx}`);
+    values.push(read);
+    idx++;
+  }
+
+  if (type) {
+    if (Array.isArray(type) && type.length > 0) {
+      const placeholders = type.map((_, i) => `$${idx + i}`).join(', ');
+      whereConditions.push(`type IN (${placeholders})`);
+      values.push(...type);
+      idx += type.length;
+    } else if (typeof type === 'string') {
+      whereConditions.push(`type = $${idx}`);
+      values.push(type);
+      idx++;
+    }
+  }
+
+  if (fromDate) {
+    whereConditions.push(`created_at >= $${idx}`);
+    values.push(fromDate);
+    idx++;
+  }
+
+  if (toDate) {
+    whereConditions.push(`created_at <= $${idx}`);
+    values.push(toDate);
+    idx++;
+  }
+
+  const whereSql = whereConditions.join(' AND ');
+
+  const countResult = await query(
+    `SELECT COUNT(*) as count FROM notifications WHERE ${whereSql}`,
+    values
   );
-  return result.rows;
+  const total = parseInt(countResult.rows[0].count, 10);
+
+  const unreadResult = await query(
+    `SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND read = false`,
+    [userId]
+  );
+  const unreadCount = parseInt(unreadResult.rows[0].count, 10);
+
+  values.push(limit, offset);
+  const listResult = await query(
+    `SELECT * FROM notifications 
+     WHERE ${whereSql}
+     ORDER BY read ASC, created_at DESC 
+     LIMIT $${idx} OFFSET $${idx + 1}`,
+    values
+  );
+
+  return {
+    list: listResult.rows,
+    total,
+    unreadCount,
+  };
 }
 
 export async function getUnreadCount(userId: string) {
@@ -54,6 +124,24 @@ export async function getUnreadCount(userId: string) {
     [userId]
   );
   return parseInt(result.rows[0].count, 10);
+}
+
+export async function getNotificationTypes(userId: string): Promise<{ type: string; count: number; unread: number }[]> {
+  const result = await query(
+    `SELECT type, 
+            COUNT(*) as count, 
+            SUM(CASE WHEN read = false THEN 1 ELSE 0 END) as unread
+     FROM notifications 
+     WHERE user_id = $1
+     GROUP BY type
+     ORDER BY type`,
+    [userId]
+  );
+  return result.rows.map((row: any) => ({
+    type: row.type,
+    count: parseInt(row.count, 10),
+    unread: parseInt(row.unread, 10),
+  }));
 }
 
 export async function markAsRead(userId: string, notificationId: string) {

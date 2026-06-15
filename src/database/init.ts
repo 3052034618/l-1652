@@ -78,17 +78,44 @@ export async function initDatabase() {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS canteen_hours (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+        meal_type VARCHAR(20) NOT NULL CHECK (meal_type IN ('breakfast', 'lunch', 'dinner')),
+        open_time TIME NOT NULL,
+        last_order_time TIME NOT NULL,
+        close_time TIME NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(day_of_week, meal_type)
+      );
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         student_id UUID NOT NULL REFERENCES users(id),
         total_amount DECIMAL(10,2) NOT NULL,
         status VARCHAR(20) NOT NULL DEFAULT 'pending' 
           CHECK (status IN ('pending', 'paid', 'preparing', 'ready', 'completed', 'cancelled')),
+        pickup_scheduled_time TIMESTAMP,
         pickup_window_start TIMESTAMP,
         pickup_window_end TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP,
         cancelled_at TIMESTAMP
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shopping_cart (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        dish_id UUID NOT NULL REFERENCES dishes(id),
+        quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(student_id, dish_id)
       );
     `);
 
@@ -182,10 +209,14 @@ export async function initDatabase() {
         quantity DECIMAL(10,2) NOT NULL,
         requested_by UUID NOT NULL REFERENCES users(id),
         approved_by UUID REFERENCES users(id),
-        status VARCHAR(20) NOT NULL DEFAULT 'pending'
-          CHECK (status IN ('pending', 'approved', 'rejected', 'ordered', 'delivered')),
+        status VARCHAR(25) NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'approved', 'rejected', 'ordered', 'supplier_accepted', 'supplier_rejected', 'shipping', 'delivered')),
         estimated_price DECIMAL(10,2),
         supplier_id UUID REFERENCES users(id),
+        supplier_accepted_at TIMESTAMP,
+        expected_delivery_time TIMESTAMP,
+        actual_delivery_time TIMESTAMP,
+        tracking_no VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         approved_at TIMESTAMP,
         delivered_at TIMESTAMP,

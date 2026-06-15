@@ -6,13 +6,20 @@ import { createAndAssignMealTasks } from './mealTask';
 import { OrderStatus } from '../types';
 import { broadcastOrderUpdate } from './socket';
 import { notifyOrderStatusChange, notifyLowBalance } from './notification';
+import { validatePickupTimeWithDB } from './canteenHours';
+import { clearCart } from './cart';
 
 export interface OrderItemInput {
   dish_id: string;
   quantity: number;
 }
 
-export async function createOrder(studentId: string, items: OrderItemInput[]) {
+export interface CreateOrderOptions {
+  pickup_scheduled_time?: string;
+  clear_cart?: boolean;
+}
+
+export async function createOrder(studentId: string, items: OrderItemInput[], options: CreateOrderOptions = {}) {
   const client = await getClient();
   
   try {
@@ -26,6 +33,15 @@ export async function createOrder(studentId: string, items: OrderItemInput[]) {
 
     if (validated.length === 0) {
       throw new AppError('没有有效的餐品', 400);
+    }
+
+    let pickupScheduledTime: Date | null = null;
+    if (options.pickup_scheduled_time) {
+      const validationResult = await validatePickupTimeWithDB(options.pickup_scheduled_time);
+      if (!validationResult.valid) {
+        throw new AppError(validationResult.message, 400);
+      }
+      pickupScheduledTime = new Date(options.pickup_scheduled_time);
     }
 
     const accountResult = await client.query(
@@ -43,10 +59,10 @@ export async function createOrder(studentId: string, items: OrderItemInput[]) {
     }
 
     const orderResult = await client.query(
-      `INSERT INTO orders (student_id, total_amount, status)
-       VALUES ($1, $2, 'paid')
+      `INSERT INTO orders (student_id, total_amount, status, pickup_scheduled_time)
+       VALUES ($1, $2, 'paid', $3)
        RETURNING *`,
-      [studentId, totalAmount]
+      [studentId, totalAmount, pickupScheduledTime]
     );
     const order = orderResult.rows[0];
 
@@ -83,12 +99,16 @@ export async function createOrder(studentId: string, items: OrderItemInput[]) {
 
     await client.query('COMMIT');
 
+    if (options.clear_cart) {
+      clearCart(studentId).catch(console.error);
+    }
+
     broadcastOrderUpdate(order);
     notifyOrderStatusChange(
       studentId,
       order.id,
       OrderStatus.PREPARING,
-      `订单已提交，共 ${orderItems.length} 道菜，金额 ¥${totalAmount.toFixed(2)}`
+      `订单已提交，共 ${orderItems.length} 道菜，金额 ¥${totalAmount.toFixed(2)}${pickupScheduledTime ? `，预约取餐：${formatDateTime(pickupScheduledTime)}` : ''}`
     );
 
     return {
@@ -101,6 +121,16 @@ export async function createOrder(studentId: string, items: OrderItemInput[]) {
   } finally {
     client.release();
   }
+}
+
+function formatDateTime(date: Date): string {
+  const d = new Date(date);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}`;
 }
 
 async function getCurrentBalance(studentId: string): Promise<number> {

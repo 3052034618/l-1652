@@ -32,7 +32,16 @@ export enum PurchaseStatus {
   APPROVED = 'approved',
   REJECTED = 'rejected',
   ORDERED = 'ordered',
+  SUPPLIER_ACCEPTED = 'supplier_accepted',
+  SUPPLIER_REJECTED = 'supplier_rejected',
+  SHIPPING = 'shipping',
   DELIVERED = 'delivered',
+}
+
+export enum MealType {
+  BREAKFAST = 'breakfast',
+  LUNCH = 'lunch',
+  DINNER = 'dinner',
 }
 
 export enum DishType {
@@ -217,4 +226,52 @@ export interface Notification {
   data?: Record<string, any>;
   read: boolean;
   created_at: Date;
+}
+
+export interface ShoppingCartItem {
+  id: string;
+  student_id: string;
+  dish_id: string;
+  quantity: number;
+  created_at: Date;
+  updated_at: Date;
+  dish?: Dish;
+}
+
+export interface CanteenHour {
+  id: string;
+  day_of_week: number;
+  meal_type: MealType;
+  open_time: string;
+  last_order_time: string;
+  close_time: string;
+  is_active: boolean;
+  created_at: Date;
+}
+
+export interface DailyRevenuePoint {
+  date: string;
+  revenue: number;
+  order_count: number;
+}
+
+export interface TrendDataPoint {
+  date: string;
+  value: number;
+  label: string;
+}
+
+export interface HotDishItem {
+  dish_id: string;
+  dish_name: string;
+  count: number;
+  revenue: number;
+  category?: string;
+}
+
+export interface PurchaseRequestExtended extends PurchaseRequest {
+  supplier_accepted_at?: Date;
+  expected_delivery_time?: Date;
+  actual_delivery_time?: Date;
+  tracking_no?: string;
 }

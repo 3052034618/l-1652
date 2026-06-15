@@ -16,6 +16,9 @@ import purchaseRoutes from './routes/purchase';
 import nutritionRoutes from './routes/nutrition';
 import reportRoutes from './routes/report';
 import notificationRoutes from './routes/notification';
+import cartRoutes from './routes/cart';
+import canteenHoursRoutes from './routes/canteenHours';
+import analyticsRoutes from './routes/analytics';
 
 export function createApp(): Application {
   const app = express();
@@ -43,6 +46,9 @@ export function createApp(): Application {
   app.use('/api/nutrition', nutritionRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/notifications', notificationRoutes);
+  app.use('/api/cart', cartRoutes);
+  app.use('/api/canteen-hours', canteenHoursRoutes);
+  app.use('/api/analytics', analyticsRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
