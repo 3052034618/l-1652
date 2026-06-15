@@ -4,6 +4,7 @@ import { authenticate, requireRoles } from '../middleware/auth';
 import {
   getAllPurchaseRequests,
   getPurchaseById,
+  getPurchaseByIdWithPermission,
   approvePurchaseRequest,
   confirmDelivery,
   createPurchaseRequest,
@@ -11,6 +12,9 @@ import {
   supplierAcceptOrder,
   supplierRejectOrder,
   startShipping,
+  reassignSupplier,
+  reorderPurchase,
+  closePurchaseRequest,
 } from '../services/purchase';
 import { validate, approvePurchaseSchema } from '../utils/validators';
 import { UserRole, PurchaseStatus } from '../types';
@@ -51,7 +55,11 @@ router.get('/status-flow', authenticate, (_req: Request, res: Response) => {
 
 router.get('/:id', authenticate, async (req: Request, res: Response, next) => {
   try {
-    const purchase = await getPurchaseById(req.params.id);
+    const purchase = await getPurchaseByIdWithPermission(
+      req.params.id,
+      req.user!.userId,
+      req.user!.role as UserRole
+    );
     return success(res, purchase);
   } catch (error) {
     next(error);
@@ -90,7 +98,7 @@ router.post('/:id/approve', authenticate, requireRoles(UserRole.ADMIN), async (r
   }
 });
 
-router.post('/:id/deliver', authenticate, requireRoles(UserRole.ADMIN, UserRole.SUPPLIER), async (req: Request, res: Response, next) => {
+router.post('/:id/deliver', authenticate, requireRoles(UserRole.ADMIN), async (req: Request, res: Response, next) => {
   try {
     const result = await confirmDelivery(req.params.id, req.user!.userId);
     return success(res, result, '已确认收货入库');
@@ -137,6 +145,55 @@ router.post('/:id/ship', authenticate, requireRoles(UserRole.SUPPLIER), async (r
       expected_delivery_time
     );
     return success(res, result, '已发货');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:id/reassign-supplier', authenticate, requireRoles(UserRole.ADMIN), async (req: Request, res: Response, next) => {
+  try {
+    const { supplier_id, remark } = req.body;
+    if (!supplier_id) {
+      return success(res, null, '请指定目标供应商 supplier_id', 400);
+    }
+    const result = await reassignSupplier(
+      req.params.id,
+      req.user!.userId,
+      supplier_id,
+      remark
+    );
+    return success(res, result, '已重新分配供应商');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:id/reorder', authenticate, requireRoles(UserRole.ADMIN), async (req: Request, res: Response, next) => {
+  try {
+    const { remark } = req.body;
+    const result = await reorderPurchase(
+      req.params.id,
+      req.user!.userId,
+      remark
+    );
+    return success(res, result, '已重新下单给供应商');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:id/close', authenticate, requireRoles(UserRole.ADMIN), async (req: Request, res: Response, next) => {
+  try {
+    const { reason } = req.body;
+    if (!reason) {
+      return success(res, null, '请填写关闭原因', 400);
+    }
+    const result = await closePurchaseRequest(
+      req.params.id,
+      req.user!.userId,
+      reason
+    );
+    return success(res, result, '采购单已关闭');
   } catch (error) {
     next(error);
   }

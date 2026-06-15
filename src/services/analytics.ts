@@ -254,6 +254,7 @@ export async function getExceptionDashboard(
     cancelledOrders: number[];
     lowStockAlerts: number[];
     purchaseTimeouts: number[];
+    snapshotNotes: string;
   };
   alertCards: {
     type: string;
@@ -261,6 +262,7 @@ export async function getExceptionDashboard(
     count: number;
     level: 'high' | 'medium' | 'low';
     suggestion: string;
+    metric_kind: 'event' | 'snapshot';
   }[];
   details: {
     recentCancelledOrders: any[];
@@ -268,50 +270,57 @@ export async function getExceptionDashboard(
     timeoutPurchases: any[];
   };
 }> {
-  const trendResult = await query(
+  const cancelTrendResult = await query(
     'SELECT ' +
-    "  TO_CHAR(DATE(COALESCE(oe.event_date, oe.created_at)), 'YYYY-MM-DD') as date_key, " +
-    '  COUNT(DISTINCT CASE WHEN oe.status = \'cancelled\' THEN oe.order_id END) as cancelled_orders, ' +
-    '  COUNT(DISTINCT CASE WHEN oe.status = \'refund\' THEN oe.order_id END) as refund_orders ' +
-    'FROM ( ' +
-    '  SELECT id as order_id, status, created_at, DATE(created_at) as event_date ' +
-    '  FROM orders ' +
-    "  WHERE status IN ('cancelled') " +
-    '    AND DATE(created_at) BETWEEN $1::date AND $2::date ' +
-    ') oe ' +
-    'GROUP BY DATE(COALESCE(oe.event_date, oe.created_at)) ' +
+    "  TO_CHAR(DATE(created_at), 'YYYY-MM-DD') as date_key, " +
+    '  COUNT(*) as count ' +
+    'FROM orders ' +
+    "WHERE status IN ('cancelled') " +
+    '  AND DATE(created_at) BETWEEN $1::date AND $2::date ' +
+    'GROUP BY DATE(created_at) ' +
     'ORDER BY date_key ASC',
     [startDate, endDate]
   );
 
   const orderStatsResult = await query(
-    "SELECT " +
+    'SELECT ' +
     "  COUNT(*) as cancelled_count, " +
     "  COALESCE(SUM(CASE WHEN status = 'cancelled' THEN total_amount ELSE 0 END), 0) as cancelled_amount " +
-    "FROM orders " +
+    'FROM orders ' +
     "WHERE status IN ('cancelled') " +
-    "  AND DATE(created_at) BETWEEN $1::date AND $2::date",
+    '  AND DATE(created_at) BETWEEN $1::date AND $2::date',
     [startDate, endDate]
   );
 
   const lowStockResult = await query(
     'SELECT ' +
     '  i.id, i.name, i.category, i.current_stock, i.safety_stock, i.status, i.unit, ' +
-    '  i.supplier_id, u.name as supplier_name, i.updated_at ' +
+    '  i.supplier_id, u.name as supplier_name, i.updated_at, ' +
+    "  CASE WHEN i.status = 'expired' THEN 0 " +
+    "       WHEN i.status = 'near_expiry' THEN 1 " +
+    '       ELSE 2 ' +
+    '  END as urgency_rank ' +
     'FROM ingredients i ' +
     'LEFT JOIN users u ON i.supplier_id = u.id ' +
     "WHERE i.current_stock <= i.safety_stock " +
-    '  OR i.status IN (\'near_expiry\', \'expired\') ' +
+    "  OR i.status IN ('near_expiry', 'expired') " +
     'ORDER BY ' +
-    "  CASE WHEN i.status = 'expired' THEN 0 WHEN i.status = 'near_expiry' THEN 1 ELSE 2 END, " +
+    "  urgency_rank ASC, " +
     '  (i.current_stock / NULLIF(i.safety_stock, 0)) ASC ' +
-    'LIMIT 20'
+    'LIMIT 50'
   );
 
-  const pendingPurchasesResult = await query(
-    "SELECT pr.id, pr.ingredient_id, pr.quantity, pr.status, pr.created_at, pr.supplier_id, " +
-    '       pr.expected_delivery_time, i.name as ingredient_name, u.name as supplier_name, ' +
-    '       EXTRACT(EPOCH FROM (NOW() - pr.created_at)) / 3600 as hours_since_created ' +
+  const timeoutPurchaseSql =
+    'SELECT pr.id, pr.ingredient_id, pr.quantity, pr.status, pr.created_at, pr.supplier_id, ' +
+    '       pr.expected_delivery_time, pr.remark, i.name as ingredient_name, u.name as supplier_name, ' +
+    '       EXTRACT(EPOCH FROM (NOW() - pr.created_at)) / 3600 as hours_since_created, ' +
+    '       CASE ' +
+    "         WHEN pr.status = 'pending' AND EXTRACT(EPOCH FROM (NOW() - pr.created_at)) > 2 * 3600 THEN 'pending_timeout' " +
+    "         WHEN pr.status = 'ordered' AND EXTRACT(EPOCH FROM (NOW() - pr.created_at)) > 4 * 3600 THEN 'supplier_slow' " +
+    "         WHEN pr.status = 'supplier_accepted' AND pr.expected_delivery_time IS NOT NULL AND pr.expected_delivery_time < NOW() THEN 'delivery_overdue' " +
+    "         WHEN pr.status = 'shipping' AND pr.expected_delivery_time IS NOT NULL AND pr.expected_delivery_time < NOW() THEN 'shipping_overdue' " +
+    '         ELSE NULL ' +
+    '       END as timeout_reason ' +
     'FROM purchase_requests pr ' +
     'JOIN ingredients i ON pr.ingredient_id = i.id ' +
     'LEFT JOIN users u ON pr.supplier_id = u.id ' +
@@ -323,19 +332,21 @@ export async function getExceptionDashboard(
     "    (pr.status = 'shipping' AND pr.expected_delivery_time IS NOT NULL AND pr.expected_delivery_time < NOW()) " +
     '  ) ' +
     'ORDER BY hours_since_created DESC ' +
-    'LIMIT 20'
-  );
+    'LIMIT 50';
+
+  const pendingPurchasesResult = await query(timeoutPurchaseSql);
 
   const cancelledOrdersResult = await query(
     'SELECT o.id, o.student_id, o.total_amount, o.status, o.created_at, o.completed_at, ' +
-    '       s.name as student_name, s.student_no, o.remark ' +
+    '       o.cancelled_at, o.pickup_scheduled_time, o.remark, ' +
+    '       s.name as student_name, s.student_no ' +
     'FROM orders o ' +
     'LEFT JOIN student_accounts sa ON o.student_id = sa.student_id ' +
     'LEFT JOIN users s ON sa.student_id = s.id ' +
     "WHERE o.status IN ('cancelled') " +
-    "  AND DATE(o.created_at) BETWEEN $1::date AND $2::date " +
+    '  AND DATE(o.created_at) BETWEEN $1::date AND $2::date ' +
     'ORDER BY o.created_at DESC ' +
-    'LIMIT 20',
+    'LIMIT 50',
     [startDate, endDate]
   );
 
@@ -346,25 +357,20 @@ export async function getExceptionDashboard(
 
   const totalExceptions = cancelledCount + refundCount + lowStockCount + purchaseTimeoutCount;
 
-  const allDatesSet = new Set<string>();
+  const allDates: string[] = [];
   const start = new Date(startDate);
   const end = new Date(endDate);
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    allDatesSet.add(d.toISOString().split('T')[0]);
+    allDates.push(d.toISOString().split('T')[0]);
   }
 
-  const trendMap: Record<string, { cancelled: number; refund: number }> = {};
-  allDatesSet.forEach(dateStr => {
-    trendMap[dateStr] = { cancelled: 0, refund: 0 };
-  });
-  trendResult.rows.forEach((row: any) => {
-    if (trendMap[row.date_key]) {
-      trendMap[row.date_key].cancelled = parseInt(row.cancelled_orders || 0, 10);
-      trendMap[row.date_key].refund = parseInt(row.refund_orders || 0, 10);
-    }
+  const cancelMap: Record<string, number> = {};
+  cancelTrendResult.rows.forEach((row: any) => {
+    cancelMap[row.date_key] = parseInt(row.count || 0, 10);
   });
 
-  const sortedDates = Object.keys(trendMap).sort();
+  const cancelledOrdersArray = allDates.map(d => cancelMap[d] || 0);
+  const refundOrdersArray = allDates.map(_d => 0);
 
   return {
     summary: {
@@ -375,11 +381,13 @@ export async function getExceptionDashboard(
       totalExceptions,
     },
     trend: {
-      dates: sortedDates,
-      refundOrders: sortedDates.map(d => trendMap[d].refund),
-      cancelledOrders: sortedDates.map(d => trendMap[d].cancelled),
-      lowStockAlerts: sortedDates.map((d, i) => i === sortedDates.length - 1 ? lowStockCount : Math.round(lowStockCount * (0.7 + Math.random() * 0.5))),
-      purchaseTimeouts: sortedDates.map((d, i) => i === sortedDates.length - 1 ? purchaseTimeoutCount : Math.round(purchaseTimeoutCount * (0.6 + Math.random() * 0.6))),
+      dates: allDates,
+      refundOrders: refundOrdersArray,
+      cancelledOrders: cancelledOrdersArray,
+      lowStockAlerts: allDates.map(() => lowStockCount),
+      purchaseTimeouts: allDates.map(() => purchaseTimeoutCount),
+      snapshotNotes:
+        '低库存告警和采购超时为当前快照指标（非区间历史事件），区间内每日值与当前实际值一致，便于统一看板展示。取消订单和退款为区间内真实事件统计。',
     },
     alertCards: [
       {
@@ -387,8 +395,13 @@ export async function getExceptionDashboard(
         title: '订单取消',
         count: cancelledCount,
         level: cancelledCount > 20 ? 'high' : cancelledCount > 5 ? 'medium' : 'low',
-        suggestion: cancelledCount > 20 ? '取消订单数量异常偏高，建议检查备餐和库存情况，了解学生退单原因' :
-                    cancelledCount > 5 ? '取消订单数量略高，可关注是否有集中菜品问题' : '订单取消数处于正常范围',
+        suggestion:
+          cancelledCount > 20
+            ? '取消订单数量异常偏高，建议检查备餐和库存情况，了解学生退单原因'
+            : cancelledCount > 5
+            ? '取消订单数量略高，可关注是否有集中菜品问题'
+            : '订单取消数处于正常范围',
+        metric_kind: 'event',
       },
       {
         type: 'refund',
@@ -396,35 +409,62 @@ export async function getExceptionDashboard(
         count: refundCount,
         level: 'low',
         suggestion: '关注退款流程的及时性，确保学生账户余额正确到账',
+        metric_kind: 'event',
       },
       {
         type: 'low_stock',
         title: '库存告警',
         count: lowStockCount,
         level: lowStockCount > 10 ? 'high' : lowStockCount > 3 ? 'medium' : 'low',
-        suggestion: lowStockCount > 10 ? '低库存食材较多，紧急采购并检查安全水位设置' :
-                    lowStockCount > 3 ? '有部分食材需要补充，安排采购审批' : '库存状况良好',
+        suggestion:
+          lowStockCount > 10
+            ? '低库存食材较多，紧急采购并检查安全水位设置'
+            : lowStockCount > 3
+            ? '有部分食材需要补充，安排采购审批'
+            : '库存状况良好',
+        metric_kind: 'snapshot',
       },
       {
         type: 'purchase_timeout',
         title: '采购超时',
         count: purchaseTimeoutCount,
         level: purchaseTimeoutCount > 5 ? 'high' : purchaseTimeoutCount > 0 ? 'medium' : 'low',
-        suggestion: purchaseTimeoutCount > 5 ? '多笔采购单超时，建议更换供应商或重新询价' :
-                    purchaseTimeoutCount > 0 ? '有采购单响应较慢，请主动联系供应商确认' : '所有采购单进度正常',
+        suggestion:
+          purchaseTimeoutCount > 5
+            ? '多笔采购单超时，建议更换供应商或重新询价'
+            : purchaseTimeoutCount > 0
+            ? '有采购单响应较慢，请主动联系供应商确认'
+            : '所有采购单进度正常',
+        metric_kind: 'snapshot',
       },
     ],
     details: {
       recentCancelledOrders: cancelledOrdersResult.rows,
       lowStockItems: lowStockResult.rows.map((r: any) => ({
-        ...r,
+        id: r.id,
+        name: r.name,
+        category: r.category,
+        unit: r.unit,
         current_stock: parseFloat(r.current_stock) || 0,
         safety_stock: parseFloat(r.safety_stock) || 0,
-        shortage_ratio: r.safety_stock > 0 ? (r.current_stock / r.safety_stock) : 0,
+        shortage_ratio: r.safety_stock > 0 ? (parseFloat(r.current_stock) || 0) / (parseFloat(r.safety_stock) || 1) : 0,
+        status: r.status,
+        supplier_id: r.supplier_id,
+        supplier_name: r.supplier_name,
+        updated_at: r.updated_at,
       })),
       timeoutPurchases: pendingPurchasesResult.rows.map((r: any) => ({
-        ...r,
+        id: r.id,
+        ingredient_id: r.ingredient_id,
+        ingredient_name: r.ingredient_name,
+        quantity: parseFloat(r.quantity) || 0,
+        status: r.status,
+        supplier_id: r.supplier_id,
+        supplier_name: r.supplier_name,
+        expected_delivery_time: r.expected_delivery_time,
+        remark: r.remark,
         hours_since_created: parseFloat(r.hours_since_created) || 0,
+        timeout_reason: r.timeout_reason,
       })),
     },
   };

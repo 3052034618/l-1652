@@ -7,7 +7,6 @@ import { OrderStatus } from '../types';
 import { broadcastOrderUpdate } from './socket';
 import { notifyOrderStatusChange, notifyLowBalance } from './notification';
 import { validatePickupTimeWithDB } from './canteenHours';
-import { clearCart } from './cart';
 
 export interface OrderItemInput {
   dish_id: string;
@@ -97,11 +96,14 @@ export async function createOrder(studentId: string, items: OrderItemInput[], op
 
     const mealTasks = await createAndAssignMealTasks(client, order.id, orderItems);
 
-    await client.query('COMMIT');
-
     if (options.clear_cart) {
-      clearCart(studentId).catch(console.error);
+      await client.query(
+        'DELETE FROM shopping_cart WHERE student_id = $1',
+        [studentId]
+      );
     }
+
+    await client.query('COMMIT');
 
     broadcastOrderUpdate(order);
     notifyOrderStatusChange(
