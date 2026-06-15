@@ -1,5 +1,7 @@
-import { query, getClient } from '../database/pool';
+import { query } from '../database/pool';
 import { emitToUser } from './socket';
+export { getAllAdmins } from './auth';
+import { User } from '../types';
 
 export type NotificationType =
   | 'order_status'

@@ -130,7 +130,7 @@ export async function inboundIngredient(
     broadcastInventoryUpdate(updatedIngredient);
 
     const admins = await getAllAdmins();
-    const adminIds = admins.map(a => a.id);
+    const adminIds = admins.map((a: { id: string }) => a.id);
 
     if (status === IngredientStatus.EXPIRED) {
       await notifyIngredientExpiry(adminIds, ingredient.name, 0, 'expired');
@@ -240,7 +240,7 @@ export async function checkExpiryStatus() {
   );
 
   const admins = await getAllAdmins();
-  const adminIds = admins.map(a => a.id);
+  const adminIds = admins.map((a: { id: string }) => a.id);
 
   for (const ingredient of result.rows) {
     const expiryDate = new Date(ingredient.expiry_date);
@@ -281,7 +281,7 @@ export async function checkLowStock() {
   );
 
   const admins = await getAllAdmins();
-  const adminIds = admins.map(a => a.id);
+  const adminIds = admins.map((a: { id: string }) => a.id);
 
   for (const ingredient of result.rows) {
     await notifyLowStock(

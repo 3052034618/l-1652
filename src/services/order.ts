@@ -28,15 +28,18 @@ export async function createOrder(studentId: string, items: OrderItemInput[]) {
       throw new AppError('没有有效的餐品', 400);
     }
 
-    try {
-      await deductBalance(client, studentId, totalAmount, '', '订单预扣款');
-    } catch (error: any) {
-      if (error.message === '账户余额不足') {
-        await client.query('ROLLBACK');
-        await notifyLowBalance(studentId, await getCurrentBalance(studentId), totalAmount);
-        throw new AppError('账户余额不足，请先充值后再点餐', 400);
-      }
-      throw error;
+    const accountResult = await client.query(
+      'SELECT balance FROM student_accounts WHERE student_id = $1',
+      [studentId]
+    );
+    if (accountResult.rows.length === 0) {
+      throw new AppError('学生账户不存在', 404);
+    }
+    const currentBalance = parseFloat(accountResult.rows[0].balance);
+    if (currentBalance < totalAmount) {
+      await client.query('ROLLBACK');
+      await notifyLowBalance(studentId, currentBalance, totalAmount);
+      throw new AppError('账户余额不足，请先充值后再点餐', 400);
     }
 
     const orderResult = await client.query(
@@ -47,13 +50,7 @@ export async function createOrder(studentId: string, items: OrderItemInput[]) {
     );
     const order = orderResult.rows[0];
 
-    await client.query(
-      `UPDATE account_transactions 
-       SET order_id = $1 
-       WHERE student_id = $2 AND order_id IS NULL 
-       ORDER BY created_at DESC LIMIT 1`,
-      [order.id, studentId]
-    );
+    await deductBalance(client, studentId, totalAmount, order.id, '订单扣款');
 
     const orderItems: any[] = [];
     for (const item of validated) {

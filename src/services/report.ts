@@ -32,7 +32,7 @@ export async function generateMonthlyOperationsReport(month?: string) {
   const avgOrderValue = parseFloat(ordersResult.rows[0].avg_order_value) || 0;
 
   const prepTimeResult = await query(
-    `SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (mt.completed_at - mt.assigned_at)) / 60) as avg_prep_minutes
+    `SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (mt.completed_at - mt.assigned_at)) / 60), 0) as avg_prep_minutes
      FROM meal_tasks mt
      JOIN orders o ON mt.order_id = o.id
      WHERE mt.completed_at IS NOT NULL
@@ -44,15 +44,15 @@ export async function generateMonthlyOperationsReport(month?: string) {
 
   const wasteResult = await query(
     `SELECT 
-       COALESCE(SUM(CASE WHEN isr.type = 'waste' THEN isr.quantity ELSE 0 END) as total_waste,
-       COALESCE(SUM(CASE WHEN isr.type = 'out' THEN isr.quantity ELSE 0 END)) as total_out
+       COALESCE(SUM(CASE WHEN isr.type = 'waste' THEN isr.quantity ELSE 0 END), 0) as total_waste,
+       COALESCE(SUM(CASE WHEN isr.type = 'out' THEN isr.quantity ELSE 0 END), 0) as total_out
      FROM ingredient_stock_records isr
      WHERE isr.created_at BETWEEN $1 AND $2`,
     [startDate, endDate]
   );
   const totalWaste = parseFloat(wasteResult.rows[0].total_waste) || 0;
   const totalOut = parseFloat(wasteResult.rows[0].total_out) || 0;
-  const wasteRate = totalOut > 0 ? totalWaste / (totalWaste + totalOut) : 0;
+  const wasteRate = (totalWaste + totalOut) > 0 ? totalWaste / (totalWaste + totalOut) : 0;
 
   const topDishesResult = await query(
     `SELECT d.id as dish_id, d.name as dish_name,
@@ -100,7 +100,7 @@ export async function generateMonthlyOperationsReport(month?: string) {
   const report = result.rows[0];
 
   const admins = await getAllAdmins();
-  const adminIds = admins.map(a => a.id);
+  const adminIds = admins.map((a: { id: string }) => a.id);
   await notifyOperationsReport(adminIds, reportMonth);
 
   return report;
@@ -143,7 +143,7 @@ export async function exportOperationsReport(month: string): Promise<string> {
   ];
 
   const dishes = Array.isArray(report.top_selling_dishes) ? report.top_selling_dishes : [];
-  dishes.forEach((dish, index) => {
+  dishes.forEach((dish: { dish_name: string; count: number }, index: number) => {
     csvLines.push(`${index + 1},${dish.dish_name},${dish.count}`);
   });
 

@@ -164,10 +164,10 @@ function generateRecommendations(totals: typeof DAILY_RECOMMENDED): string[] {
 
 export async function getStudentNutritionReports(studentId: string, limit: number = 30) {
   const result = await query(
-    'SELECT * FROM nutrition_reports
+    `SELECT * FROM nutrition_reports
      WHERE student_id = $1
      ORDER BY report_date DESC
-     LIMIT $2',
+     LIMIT $2`,
     [studentId, limit]
   );
   return result.rows;

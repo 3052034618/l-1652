@@ -23,10 +23,9 @@ export async function createPurchaseRequest(
   const purchase = result.rows[0];
   broadcastPurchaseUpdate(purchase);
 
-  const { getAllAdmins } = await import('./notification');
   const admins = await getAllAdmins();
-  const adminIds = admins.map(a => a.id);
-  
+  const adminIds = admins.map((a: { id: string }) => a.id);
+
   const ingredientResult = await query(
     'SELECT name FROM ingredients WHERE id = $1',
     [ingredientId]
